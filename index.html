@@ -81,14 +81,13 @@ const MiniTooltip = forwardRef(function MiniTooltip({open:openProp,onOpen,onClos
 
 // ── State ──
 const B={o:0,c:0}, F={o:0,c:0};
-let buggyOpen=false, fixRef={current:false};
+let buggyOpen=false;
 
 function App(){
   const[,t]=useState(0);
-  tick=()=>t(n=>n+1);
 
   const run=()=>{
-    B.o=0;B.c=0;F.o=0;F.c=0;buggyOpen=false;fixRef={current:false};
+    B.o=0;B.c=0;F.o=0;F.c=0;buggyOpen=false;
     t(n=>n+1);
 
     // 等 React commit 重渲染(重置数据),再发事件
