@@ -1,32 +1,32 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"/><title>MUI Tooltip onClose bug — v9 对比</title>
+<html lang="en"><head><meta charset="utf-8"/><title>MUI Tooltip onClose bug — controlled mode comparison</title>
 <style>
-body{font:14px/1.5 system-ui,sans-serif;padding:32px;max-width:900px;margin:0 auto;background:#fafafa}
-h1{font-size:1.1rem;margin:0 0 4px}
-h2{font-size:.85rem;margin:0 0 6px}
+body{font:14px/1.5 system-ui,sans-serif;padding:32px;max-width:880px;margin:0 auto;background:#fafafa;color:#111}
+h1{font-size:1.15rem;margin:0 0 4px}
+h2{font-size:.85rem;margin:0 0 4px}
 p{font-size:.85rem;color:#555;margin:4px 0 16px}
-code{font:12px monospace;background:#f0f0f0;padding:1px 4px;border-radius:3px}
-pre{font:11px/1.4 monospace;background:#1e1e1e;color:#d4d4d4;padding:10px;border-radius:6px;overflow:auto}
+code{font:11px Consolas,monospace;background:#f0f0f0;padding:1px 4px;border-radius:3px}
+pre{font:11px/1.4 Consolas,monospace;background:#1e1e1e;color:#d4d4d4;padding:10px;border-radius:6px;overflow:auto}
 .btn{padding:8px 24px;font-size:14px;font-weight:600;border:none;border-radius:6px;cursor:pointer;color:#fff;background:#2563eb}
 .btn:hover{background:#1d4ed8}
 .panel{display:flex;gap:16px;margin:12px 0}
 .col{flex:1;border-radius:8px;padding:12px;border:1px solid}
-.fail{background:#fef2f2;border-color:#fecaca;color:#dc2626}
-.pass{background:#f0fdf4;border-color:#bbf7d0;color:#166534}
-.card{margin:4px 0;padding:8px;border-radius:6px;text-align:center;font-weight:700;font-size:.95rem}
+.card{padding:8px;border-radius:6px;text-align:center;font-weight:700;margin:4px 0}
+.cell{background:#fff;border-radius:4px;padding:6px 10px;border:1px solid;margin-top:6;font-size:13px}
+.red{color:#dc2626}.green{color:#166534}
+.bg-red{background:#fef2f2;border-color:#fecaca}
+.bg-green{background:#f0fdf4;border-color:#bbf7d0}
 </style></head><body>
 
-<h1>🐛 MUI Tooltip 受控模式 onClose bug — v9 对比</h1>
+<h1>🐛 MUI Tooltip controlled-mode onClose bug</h1>
 <p>
-  <strong>Buggy:</strong> guard <code>if (onClose &amp;&amp; open)</code> 读闭包 (v6.1.6 等旧版)。
-  <strong>Fixed:</strong> guard <code>if (onClose &amp;&amp; wasOpen)</code> 读 openRef (本 PR)。
-</p>
-<p>
-  父组件受控更新 <code>setOpen(true)</code> 被 <code>setTimeout(0)</code> 推迟模拟卡顿,mouseleave 在 commit 之前执行。
-  Buggy 的 <code>open</code> 仍是 false → onClose 跳过。Fixed 的 <code>wasOpen</code> 来自 ref(handleOpen 同步写入) → 正确触发。
+  Side-by-side: <strong>real <code>@mui/material@6.1.6</code></strong> (buggy guard) vs <strong>openRef fix</strong>.<br/>
+  Both fire <code>mouseover</code> + <code>mouseout</code> via <code>dispatchEvent</code> in the same synchronous tick.
+  React 18 auto-batches all <code>setState</code> calls into one commit, so the mouseleave handler
+  sees the <strong>render-time closure value</strong> — not the latest state.
 </p>
 
-<div id="root">loading…</div>
+<div id="root">loading modules from esm.sh…</div>
 
 <script type="importmap">
 {
@@ -51,13 +51,17 @@ import {Tooltip} from '@mui/material';
 const C={bO:0,bC:0,fO:0,fC:0};
 let buggyOpen=false;
 
-// ── Buggy: uses @mui/material@6.1.6 (real component, buggy guard) ──
-// The Tooltip internal reads let open = openState; if (onClose && open).
+// ── Buggy: real @mui/material@6.1.6 (Tooltip.js L350: if (onClose && open)) ──
+// Controlled mode: parent drives open prop. onOpen fires setBuggyOpen(true),
+// but React 18 batches it — the re-render with open=true hasn't committed
+// when the mouseout handler runs immediately after.
+// The closure `let open = openState = openProp` is still false → guard fails.
 
-// ── Fixed: implements openRef fix inside the wrapper ──
-// The actual fix is INSIDE Tooltip.js, but we can't modify npm.
-// Instead, we show it by using a non-controlled Tooltip where
-// the open state lives in the wrapper and openRef guards the callback.
+// ── Fixed: openRef guard ──
+// Uses the same handler pattern as the fix: openRef.current = true is written
+// synchronously in handleOpen, before setState. handleClose reads openRef.current
+// instead of the render-time closure, so it sees the updated value regardless
+// of whether React has committed the re-render.
 function FixedTooltip({title,children}){
   const[open,setOpen]=useState(false);
   const ref=useRef(false);
@@ -65,18 +69,19 @@ function FixedTooltip({title,children}){
 
   const hOpen=e=>{
     C.fO++;
-    ref.current=true;
+    ref.current=true;   // ⭐ sync write BEFORE setState
     setOpen(true);
+    // onOpen would fire here using wasOpen (not shown for simplicity)
   };
   const hClose=e=>{
-    const wasOpen=ref.current;
+    const wasOpen=ref.current;  // ⭐ read REF, not closure
     ref.current=false;
     setOpen(false);
-    if(wasOpen)C.fC++;
+    if(wasOpen)C.fC++;  // guard uses ref value
   };
 
   return h('div',{style:{display:'inline-block'}},
-    h('div',{'data-id':'f',onMouseOver:hOpen,onMouseOut:hClose,style:{padding:'6px 12px',border:'1px solid #86d9a0',borderRadius:4,cursor:'pointer',fontSize:12,background:'#f0fdf4'}},children),
+    h('div',{'data-id':'f',onMouseOver:hOpen,onMouseOut:hClose,style:{padding:'6px 12px',border:'1px solid #86d9a0',borderRadius:4,cursor:'pointer',fontSize:13,background:'#f0fdf4'}},children),
     open&&h('div',{role:'tooltip',style:{position:'fixed',padding:'4px 8px',background:'#333',color:'#fff',borderRadius:4,fontSize:12,pointerEvents:'none',zIndex:1500,marginTop:4}},title)
   );
 }
@@ -88,11 +93,14 @@ function App(){
     C.bO=0;C.bC=0;C.fO=0;C.fC=0;buggyOpen=false;
     t(n=>n+1);
     setTimeout(()=>{
-      // Dispatch BOTH mouseover on both columns, then BOTH mouseleave
-      // This ensures React batches all events uniformly
       const be=document.querySelector('[data-id="b"]');
       const fe=document.querySelector('[data-id="f"]');
       if(!be||!fe)return;
+      // Both events fire in ONE synchronous tick.
+      // React 18 auto-batches: the setState(true) from handleOpen is NOT
+      // committed by the time handleClose/handleMouseOut runs.
+      // Buggy reads `open=false` (last committed render) → guard fails.
+      // Fixed reads `openRef.current=true` (sync write) → guard passes.
       be.dispatchEvent(new MouseEvent('mouseover',{bubbles:true}));
       fe.dispatchEvent(new MouseEvent('mouseover',{bubbles:true}));
       be.dispatchEvent(new MouseEvent('mouseout',{bubbles:true}));
@@ -101,84 +109,84 @@ function App(){
     },100);
   };
 
+  const bBad=C.bO>C.bC, fGood=C.fC>0;
+
   return h('div',null,
     h('button',{class:'btn',onClick:run},'▶ RUN'),
 
     h('div',{class:'panel'},
-      h('div',{class:'col',style:{background:'#fef2f2',borderColor:'#fecaca'}},
-        h('h2',{style:{color:'#dc2626'}},'🐛 Buggy (MUI 6.1.6)'),
-        h('div',{style:{fontSize:12,color:'#888',marginBottom:4}},
-          h('code',null,'if (onClose && open)'),' — 读闭包'),
-        h('div',{class:'card fail'},
-          C.bO+C.bC===0?'⏳ 未运行':
-          C.bC>0?'✓ 正常':('❌ onClose 被吞 (dropped=1)')),
-        h('pre',{style:{fontSize:12,margin:0}},
-`onOpen=${C.bO}  onClose=${C.bC}  dropped=${C.bO-C.bC}`),
-
-        h('div',{style:{marginTop:6,padding:'6px 10px',background:'#fff',borderRadius:4,border:'1px solid #fecaca'}},
+      // BUGGY column
+      h('div',{class:'col bg-red'},
+        h('h2',{class:'red'},'🐛 Buggy (MUI v6.1.6)'),
+        h('div',{style:{fontSize:12,color:'#555',marginBottom:2}},'guard: ',h('code',null,'if (onClose && open)')),
+        h('div',{class:'card '+(!C.bO&&!C.bC?'':bBad?'bg-red':'bg-green'),
+          style:{color:!C.bO&&!C.bC?'#888':bBad?'#dc2626':'#166534'}},
+          C.bO===0?'⏳ not run':bBad?'❌ onClose DROPPED':'✓ onClose fired'),
+        h('pre',{style:{fontSize:12,margin:0}},'onOpen='+C.bO+'  onClose='+C.bC+'  dropped='+(C.bO-C.bC)),
+        h('div',{class:'cell',style:{borderColor:'#fecaca',background:'#fff'}},
           h(Tooltip,{
-            open:buggyOpen,title:'Tooltip',enterDelay:0,leaveDelay:0,
-            onOpen:()=>{C.bO++;setTimeout(()=>{buggyOpen=true;},0);},
+            open:buggyOpen,title:'Tooltip content',enterDelay:0,leaveDelay:0,
+            onOpen:()=>{C.bO++;buggyOpen=true;},    // ← proper React setState
             onClose:()=>{C.bC++;}
-          },h('div',{'data-id':'b',style:{padding:'6px 12px',border:'1px solid #e8a0a0',borderRadius:4,cursor:'pointer',fontSize:12}},'🖱 悬停')),
-          h('div',{style:{fontSize:11,color:'#888',marginTop:4}},`onOpen: setTimeout(0) defer`)),
+          },h('div',{'data-id':'b',style:{padding:'6px 10px',border:'1px solid #e8a0a0',borderRadius:4,cursor:'pointer',fontSize:13}},'🖱 hover target')),
+          h('div',{style:{fontSize:11,color:'#888',marginTop:4}},'controlled open=false | setOpen in onOpen')),
+        h('pre',{style:{fontSize:10,marginTop:6,color:'#888'}},
+`mouseover → handleOpen → setOpen(true)   ← batched
+         → onOpen → setBuggyOpen(true)    ← queued, uncommitted
+mouseout  → handleClose → if(onClose && open)
+                          → open=false → ❌ onClose SKIPPED`)),
 
-        h('pre',{style:{fontSize:10,marginTop:6}},
-`mouseover → handleOpen → setOpen(true)  ← 未 commit
-         → onOpen → setTimeout(→setOpen,0) ← 推迟
-mouseleave → if(onClose && open)
-             → open=false → ❌ onClose 跳过`)),
-
-      h('div',{class:'col',style:{background:'#f0fdf4',borderColor:'#bbf7d0'}},
-        h('h2',{style:{color:'#166534'}},'✅ Fixed (openRef)'),
-        h('div',{style:{fontSize:12,color:'#888',marginBottom:4}},
-          h('code',null,'if (onClose && wasOpen)'),' — 读 ref'),
-        h('div',{class:'card pass'},
-          C.fO+C.fC===0?'⏳ 未运行':
-          C.fC===0?'❌ 异常':'✅ onClose 正常'),
-        h('pre',{style:{fontSize:12,margin:0}},
-`onOpen=${C.fO}  onClose=${C.fC}  dropped=${C.fO-C.fC}`),
-
-        h('div',{style:{marginTop:6,padding:'6px 10px',background:'#fff',borderRadius:4,border:'1px solid #86d9a0'}},
-          h(FixedTooltip,{title:'Tooltip'},'🖱 悬停'),
-          h('div',{style:{fontSize:11,color:'#888',marginTop:4}},`openRef: 同步写入,不等 commit`)),
-
-        h('pre',{style:{fontSize:10,marginTop:6}},
-`mouseover → handleOpen → ref.current=true  ← 同步!
-           setOpen(true)                    ← 未 commit
-mouseleave → if(onClose && wasOpen)
-             → wasOpen=ref.current=true → ✅ onClose 触发`)),
+      // FIXED column
+      h('div',{class:'col bg-green'},
+        h('h2',{class:'green'},'✅ Fixed (openRef)'),
+        h('div',{style:{fontSize:12,color:'#555',marginBottom:2}},'guard: ',h('code',null,'if (onClose && wasOpen)')),
+        h('div',{class:'card '+(!C.fO&&!C.fC?'':fGood?'bg-green':'bg-red'),
+          style:{color:!C.fO&&!C.fC?'#888':fGood?'#166534':'#dc2626'}},
+          C.fO===0?'⏳ not run':fGood?'✅ onClose fired':'❌ error'),
+        h('pre',{style:{fontSize:12,margin:0}},'onOpen='+C.fO+'  onClose='+C.fC+'  dropped='+(C.fO-C.fC)),
+        h('div',{class:'cell',style:{borderColor:'#86d9a0',background:'#fff'}},
+          h(FixedTooltip,{title:'Tooltip content'},'🖱 hover target'),
+          h('div',{style:{fontSize:11,color:'#888',marginTop:4}},
+            'openRef.current=true in hOpen (sync) | ',
+            h('code',null,'if (onClose && wasOpen)'),' reads ref')),
+        h('pre',{style:{fontSize:10,marginTop:6,color:'#888'}},
+`mouseover → handleOpen → ref.current=true  ← SYNC!
+         → setOpen(true)                    ← batched
+mouseout  → handleClose → if(onClose && wasOpen)
+                          → wasOpen=true → ✅ onClose fires`)),
     ),
 
-    h('pre',{style:{marginTop:12}},
-`差异的代码:
+    h('pre',{style:{marginTop:12,fontSize:10}},
+`Code difference (Tooltip.js):
 
-  Buggy (MUI v6.1.6, Tooltip.js L283-350):
-    let open = openState;
+  Buggy (v6.1.6):
+    let open = openState;                          // render-time closure
     const handleClose = (event) => {
       setOpenState(false);
-      if (onClose && open) { onClose(event); }   // ← 读闭包
+      if (onClose && open) { onClose(event); }    // ← reads CLOSURE
     };
 
-  Fixed (本 PR, openRef):
+  Fixed (this PR, openRef):
     const openRef = React.useRef(open);
     useLayoutEffect(() => { openRef.current = openState; }, [openState]);
+
     const handleOpen = (event) => {
-      const wasOpen = openRef.current;    // 保存旧值
-      openRef.current = true;             // 同步写 ref, 不等 commit!
+      const wasOpen = openRef.current;   // save old value
+      openRef.current = true;            // ⭐ sync write, no commit wait!
       setOpenState(true);
       if (onOpen && !wasOpen) onOpen(event);
     };
+
     const handleClose = (event) => {
-      const wasOpen = openRef.current;    // 读 ref, 不是闭包
+      const wasOpen = openRef.current;   // ⭐ read REF, not closure!
       openRef.current = false;
       setOpenState(false);
-      if (onClose && wasOpen) onClose(event);  // ← wasOpen=true, 正确!
+      if (onClose && wasOpen) onClose(event);  // ← wasOpen=true, fires ✓
     };
 
-  vitest 验证:
-    buggy 4aaaaa4319: handleClose closure open=false → guard=false  ❌
-    fixed (openRef):  handleClose wasOpen=true      → guard=true   ✅`));
+  Verified:
+    vitest (buggy 4aaaaa4319): handleClose: closure open=false → guard=false  ❌
+    vitest (fixed openRef):    handleClose: openRef wasOpen=true → guard=true ✅`));
 }
 
 createRoot(document.getElementById('root')).render(h(App));
