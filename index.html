@@ -82,7 +82,6 @@ const MiniTooltip = forwardRef(function MiniTooltip({open:openProp,onOpen,onClos
 // ── State ──
 const B={o:0,c:0}, F={o:0,c:0};
 let buggyOpen=false, fixRef={current:false};
-let tick=()=>{};
 
 function App(){
   const[,t]=useState(0);
@@ -90,18 +89,19 @@ function App(){
 
   const run=()=>{
     B.o=0;B.c=0;F.o=0;F.c=0;buggyOpen=false;fixRef={current:false};
-    tick();
-    document.getElementById('root').textContent='';tick();
+    t(n=>n+1);
+
+    // 等 React commit 重渲染(重置数据),再发事件
     setTimeout(()=>{
-      tick();
-      // ── Buggy: dispatch mouseover → mouseleave ──
-      document.querySelector('[data-id="b"]').dispatchEvent(new MouseEvent('mouseover',{bubbles:true}));
-      document.querySelector('[data-id="b"]').dispatchEvent(new MouseEvent('mouseleave',{bubbles:true}));
-      // ── Fixed: dispatch mouseover → mouseleave ──
-      document.querySelector('[data-id="f"]').dispatchEvent(new MouseEvent('mouseover',{bubbles:true}));
-      document.querySelector('[data-id="f"]').dispatchEvent(new MouseEvent('mouseleave',{bubbles:true}));
-      setTimeout(()=>tick(),10);
-    },50);
+      const be=document.querySelector('[data-id="b"]');
+      const fe=document.querySelector('[data-id="f"]');
+      if(!be||!fe)return;
+      be.dispatchEvent(new MouseEvent('mouseover',{bubbles:true}));
+      be.dispatchEvent(new MouseEvent('mouseleave',{bubbles:true}));
+      fe.dispatchEvent(new MouseEvent('mouseover',{bubbles:true}));
+      fe.dispatchEvent(new MouseEvent('mouseleave',{bubbles:true}));
+      t(n=>n+1);
+    },100);
   };
 
   return h('div',null,
