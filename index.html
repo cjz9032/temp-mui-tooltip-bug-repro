@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"/><title>MUI Tooltip onClose bug — controlled mode</title></head>
+<body style="font:14px/1.5 system-ui,sans-serif;padding:24px;max-width:960px;margin:0 auto;background:#fafafa">
+<h1 style="font-size:1.15rem;margin:0 0 4px">🐛 MUI Tooltip controlled-mode onClose bug</h1>
+<p style="font-size:.85rem;color:#555;margin:4px 0 12px">
+  Tooltip internal guard <code style="background:#f0f0f0;padding:1px 4px">if (onClose &amp;&amp; open)</code>
+  reads the render-time closure <code>open</code>, not the latest state.
+  When React batches <code>setOpen(true)</code> and mouseleave in the same tick,
+  <code>handleClose</code> sees stale <code>open=false</code> → onClose is dropped.
+  This simulates the race condition via <code>dispatchEvent</code> (real MouseEvents, real handlers, real React 18 batching).
+</p>
+
+<div id="root"><p style="color:#888">Loading modules from esm.sh…</p></div>
+
+<script type="importmap">{
+"imports":{
+  "react":"https://esm.sh/react@18.3.1",
+  "react-dom":"https://esm.sh/react-dom@18.3.1",
+  "react-dom/client":"https://esm.sh/react-dom@18.3.1/client",
+  "react/jsx-runtime":"https://esm.sh/react@18.3.1/jsx-runtime",
+  "@emotion/react":"https://esm.sh/@emotion/react@11?external=react",
+  "@emotion/styled":"https://esm.sh/@emotion/styled@11?external=react,@emotion/react",
+  "@mui/material":"https://esm.sh/@mui/material@6.1.6?external=react,react-dom,@emotion/react,@emotion/styled"
+}}</script>
+
+<script type="module">
+import {createElement as h,forwardRef,cloneElement,useCallback,useState} from 'react';
+import {createRoot} from 'react-dom/client';
+import {Tooltip,useForkRef} from '@mui/material';
+
+const N=200, C={o:0,c:0};
+
+// Exact WidgetTooltip pattern from the user's codebase
+const WidgetTooltip=forwardRef(function({children,onClose,onOpen,...rest},fwd){
+  const[open,setOpen]=useState(false);
+  const hOpen=useCallback(e=>{setOpen(true);onOpen?.(e);},[onOpen]);
+  const hClose=useCallback(e=>{setOpen(false);onClose?.(e);},[onClose]);
+  return h(Tooltip,{...rest,onClose:hClose,onOpen:hOpen,open},
+    cloneElement(children,{ref:useForkRef(children.ref,fwd)}));
+});
+
+function App(){
+  const[,t]=useState(0);
+  const run=()=>{C.o=0;C.c=0;t(x=>x+1);
+    setTimeout(()=>{
+      for(let i=0;i<N;i++){
+        const el=document.querySelector(`[data-id="i${i}"]`);
+        if(!el)continue;
+        el.dispatchEvent(new MouseEvent('mouseover',{bubbles:true}));
+        el.dispatchEvent(new MouseEvent('mouseleave',{bubbles:true}));}
+      setTimeout(()=>t(x=>x+1),50);},50);};
+
+  return h('div',null,
+    h('div',{style:{display:'flex',alignItems:'center',gap:12,marginBottom:12}},
+      h('button',{onClick:run,style:{padding:'6px 18px',fontSize:13,fontWeight:600,border:'none',borderRadius:6,cursor:'pointer',color:'#fff',background:'#2563eb'}},
+        '▶ RUN ('+N+' items)'),
+      h('span',{style:{fontSize:'.82rem',color:'#888'}},
+        C.o===0?'Dispatches mouseover+mouseleave synchronously on each item → React 18 batches → handleClose reads stale open':
+        'onOpen='+C.o+'  onClose='+C.c+'  dropped='+(C.o-C.c))),
+
+    // Result display
+    h('div',{style:{padding:12,borderRadius:6,background:C.o>C.c?'#fef2f2':'#fff',border:'1px solid '+(C.o>C.c?'#fecaca':'#e0e0e0'),marginBottom:12,textAlign:'center'}},
+      h('div',{style:{fontSize:'1.5rem',fontWeight:700,color:C.o>C.c?'#dc2626':'#888'}},
+        C.o===0?'⏳ Click RUN':
+        C.o>C.c?'❌ onClose dropped '+(C.o-C.c)+' times':
+        '✓ All onClose calls fired'),
+      h('div',{style:{display:'flex',gap:24,justifyContent:'center',marginTop:8,fontSize:'.85rem'}},
+        h('span',null,'onOpen: '+C.o),
+        h('span',{style:{color:'#dc2626',fontWeight:'bold'}},h('span',null,'onClose: '+C.c)),
+        h('span',{style:{color:C.o>C.c?'#dc2626':'#166534',fontWeight:'bold'}},'dropped: '+(C.o-C.c)))),
+
+    // Items grid
+    h('div',{style:{display:'flex',flexWrap:'wrap',gap:2,maxHeight:480,overflowY:'auto',padding:6,border:'1px solid #e0e0e0',borderRadius:6,background:'#fff'}},
+      Array.from({length:N},(_,i)=>
+        h(WidgetTooltip,{key:i,title:'T'+i,onOpen:()=>C.o++,onClose:()=>C.c++},
+          h('div',{'data-id':'i'+i,style:{width:60,height:22,border:'1px solid #d0d0d0',borderRadius:2,font:'10px/22px monospace',textAlign:'center',cursor:'pointer'}},''+i)))),
+
+    // Explanation
+    h('div',{style:{marginTop:16,padding:12,background:'#1e1e1e',color:'#d4d4d4',borderRadius:6,font:'11px/1.5 Consolas,monospace',overflow:'auto'}},
+      'BUG: MUI Tooltip controlled-mode onClose dropped\n'+
+      '═══════════════════════════════════════════════\n'+
+      'Tooltip.js L283: let open = openState;\n'+
+      'Tooltip.js L335: if (onOpen && !open)  { onOpen(event); }\n'+
+      'Tooltip.js L350: if (onClose && open)  { onClose(event); }\n'+
+      '                    ^ reads closure, not ref\n'+
+      '\n'+
+      'When mouseover+mouseleave fire in the same tick (React 18 auto-batch):\n'+
+      '1. mouseover → handleOpen   → setOpen(true)  — batched, NOT YET committed\n'+
+      '2. mouseleave → handleClose  → if (onClose && open) — open is STILL false!\n'+
+      '3. guard fails → onClose(event) NEVER CALLED\n'+
+      '\n'+
+      'Fix (openRef):\n'+
+      '  const openRef = React.useRef(open);\n'+
+      '  React.useLayoutEffect(() => { openRef.current = openState; }, [openState]);\n'+
+      '  \n'+
+      '  handleOpen:\n'+
+      '    const wasOpen = openRef.current;  // save\n'+
+      '    openRef.current = true;           // sync write before setState\n'+
+      '    setOpenState(true);\n'+
+      '    if (onOpen && !wasOpen) onOpen(event);\n'+
+      '  \n'+
+      '  handleClose:\n'+
+      '    const wasOpen = openRef.current;  // read ref, NOT closure\n'+
+      '    openRef.current = false;\n'+
+      '    setOpenState(false);\n'+
+      '    if (onClose && wasOpen) onClose(event);  // wasOpen=true → fires!\n'+
+      '\n'+
+      'PR: https://github.com/mui/material-ui/pull/48683'),
+  );
+}
+
+createRoot(document.getElementById('root')).render(h(App));
+</script>
+</body></html>
