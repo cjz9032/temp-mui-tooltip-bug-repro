@@ -1,20 +1,25 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"/><title>MUI Tooltip onClose bug repro</title>
+<html lang="en">
+<head><meta charset="utf-8"/><title>MUI Tooltip onClose bug — 对比</title>
 <style>
-body{font:14px/1.5 system-ui,sans-serif;padding:24px;max-width:960px;margin:0 auto;background:#fafafa}
-h1{font-size:1.15rem;margin:0 0 4px;color:#111}
-p{font-size:.85rem;color:#555;margin:4px 0 12px;max-width:720px}
-code{font:12px monospace;background:#f0f0f0;padding:1px 4px;border-radius:3px}
-pre{font:12px/1.4 monospace;background:#1e1e1e;color:#d4d4d4;padding:12px;border-radius:6px;overflow:auto}
-.cell{width:56px;height:22px;border:1px solid #d0d0d0;border-radius:3px;font:10px/22px monospace;text-align:center;display:inline-block;margin:1px;cursor:pointer}
-</style></head><body>
+body{font:14px/1.5 system-ui,sans-serif;padding:32px;max-width:900px;margin:0 auto;background:#fafafa}
+h1{font-size:1.1rem;margin:0 0 4px}
+h2{font-size:.9rem;margin:0 0 6px}
+p{font-size:.85rem;color:#555;margin:4px 0 16px}
+code{font:12px monospace;background:#f0f0f0;padding:1px 4px;border-radius:3px;font-size:11px}
+pre{font:11px/1.4 monospace;background:#1e1e1e;color:#d4d4d4;padding:10px;border-radius:6px;overflow:auto}
+.btn{padding:8px 24px;font-size:14px;font-weight:600;border:none;border-radius:6px;cursor:pointer;color:#fff;background:#2563eb;margin-right:8px}
+.btn:hover{background:#1d4ed8}
+.panel{display:flex;gap:16px;margin:12px 0}
+.col{flex:1;border-radius:8px;padding:12px;border:1px solid}
+.card{margin:8px 0;padding:12px;border-radius:6px;text-align:center;font-weight:700;font-size:1rem}
+</style>
+</head><body>
 
-<h1>🐛 MUI Tooltip controlled-mode onClose bug (v6.1.6)</h1>
+<h1>🐛 MUI Tooltip controlled-mode onClose bug — 对比</h1>
 <p>
-  Guard in Tooltip.js L350: <code>if (onClose &amp;&amp; open)</code> — <code>open</code> is the render-time closure value.
-  When the controlled parent's <code>setOpen(true)</code> is deferred (here via <code>setTimeout(0)</code>,
-  in production via page jank / router load), the mouseleave fires while <code>open</code> is still <code>false</code>.
-  Guard fails → onClose dropped.
+  Guard 读 render closure: <code>if (onClose &amp;&amp; open)</code> vs <code>if (onClose &amp;&amp; wasOpen)</code> (openRef)。
+  onOpen 用 <code>setTimeout(0)</code> 推迟 setOpen(true) 来模拟卡顿导致的 commit 滞后。
 </p>
 
 <div id="root">loading modules from esm.sh…</div>
@@ -29,86 +34,139 @@ pre{font:12px/1.4 monospace;background:#1e1e1e;color:#d4d4d4;padding:12px;border
     "@emotion/react": "https://esm.sh/@emotion/react@11?external=react",
     "@emotion/styled": "https://esm.sh/@emotion/styled@11?external=react,@emotion/react",
     "@mui/material": "https://esm.sh/@mui/material@6.1.6?external=react,react-dom,@emotion/react,@emotion/styled",
-    "@mui/utils": "https://esm.sh/@mui/utils@6.1.6?external=react,react-dom"
+    "@mui/utils": "https://esm.sh/@mui/utils@6.1.6?external=react"
   }
 }
 </script>
 
 <script type="module">
-import {createElement as h, useState} from 'react';
+import {createElement as h, useState, useRef, useLayoutEffect, forwardRef} from 'react';
 import {createRoot} from 'react-dom/client';
 import {Tooltip} from '@mui/material';
 
-const N=200, S={o:0,c:0};
-const openMap={}, deferMap={};
+// ── Buggy: MUI 6.1.6 Tooltip (real) ──
+// Tooltip.js L283: let open = openState;
+// Tooltip.js L350: if (onClose && open) onClose(event);
+//   → open 是闭包值,setOpen(true) 还没 commit 时永远是 false
+
+// ── Fixed: openRef patch ──
+// 修改 Tooltip.js 的 handleOpen/handleClose:
+//   handleOpen: wasOpen=openRef.current; openRef.current=true; setOpenState(true); if(onOpen && !wasOpen)
+//   handleClose: wasOpen=openRef.current; openRef.current=false; setOpenState(false); if(onClose && wasOpen)
+const MiniTooltip = forwardRef(function MiniTooltip({open:openProp,onOpen,onClose,title,children},ref){
+  const isControlled=openProp!==undefined;
+  const[openState,setOpen]=useState(isControlled?openProp:false);
+  const open=isControlled?openProp:openState;
+  const openRef=useRef(open);
+  useLayoutEffect(()=>{openRef.current=open;},[open]);
+
+  const hOpen=(e)=>{
+    const wasOpen=openRef.current;
+    openRef.current=true;
+    if(!isControlled)setOpen(true);
+    if(onOpen&&!wasOpen)onOpen(e);
+  };
+  const hClose=(e)=>{
+    const wasOpen=openRef.current;
+    openRef.current=false;
+    if(!isControlled)setOpen(false);
+    if(onClose&&wasOpen)onClose(e);
+  };
+
+  return h('div',{style:{display:'inline-block'},ref},
+    h('div',{onMouseOver:hOpen,onMouseLeave:hClose},children),
+    open&&h('div',{role:'tooltip',style:{position:'fixed',padding:'4px 8px',background:'#333',color:'#fff',borderRadius:4,fontSize:12,pointerEvents:'none',zIndex:1500,marginTop:4}},title)
+  );
+});
+
+// ── State ──
+const B={o:0,c:0}, F={o:0,c:0};
+let buggyOpen=false, fixRef={current:false};
+let tick=()=>{};
 
 function App(){
   const[,t]=useState(0);
+  tick=()=>t(n=>n+1);
 
   const run=()=>{
-    S.o=0;S.c=0;
-    for(let i=0;i<N;i++){openMap[i]=false;deferMap[i]=false;}
-    t(x=>x+1);
-
+    B.o=0;B.c=0;F.o=0;F.c=0;buggyOpen=false;fixRef={current:false};
+    tick();
+    document.getElementById('root').textContent='';tick();
     setTimeout(()=>{
-      for(let i=0;i<N;i++){
-        const el=document.querySelector(`[data-id="${i}"]`);
-        if(!el)continue;
-
-        // mouseover → Tooltip.handleOpen → Tooltip.onOpen → app callback
-        el.dispatchEvent(new MouseEvent('mouseover',{bubbles:true}));
-        // mouseleave → Tooltip.handleClose → guard reads open (still false!)
-        el.dispatchEvent(new MouseEvent('mouseleave',{bubbles:true}));
-      }
-      // All deferred setOpen calls are now queued in the event loop
-      // and will fire after this timeout callback returns — too late.
-      setTimeout(()=>t(x=>x+1),50);
+      tick();
+      // ── Buggy: dispatch mouseover → mouseleave ──
+      document.querySelector('[data-id="b"]').dispatchEvent(new MouseEvent('mouseover',{bubbles:true}));
+      document.querySelector('[data-id="b"]').dispatchEvent(new MouseEvent('mouseleave',{bubbles:true}));
+      // ── Fixed: dispatch mouseover → mouseleave ──
+      document.querySelector('[data-id="f"]').dispatchEvent(new MouseEvent('mouseover',{bubbles:true}));
+      document.querySelector('[data-id="f"]').dispatchEvent(new MouseEvent('mouseleave',{bubbles:true}));
+      setTimeout(()=>tick(),10);
     },50);
   };
 
-  // Each Tooltip is CONTROLLED: open comes from openMap[i].
-  // onOpen defers updating openMap[i] to true via setTimeout(0),
-  // simulating a commit delayed by page jank / router load.
   return h('div',null,
-    h('div',{style:{display:'flex',alignItems:'center',gap:12,marginBottom:12}},
-      h('button',{onClick:run,style:{padding:'6px 18px',fontSize:13,fontWeight:600,border:'none',borderRadius:6,cursor:'pointer',color:'#fff',background:'#2563eb'}},
-        '▶ RUN ('+N+' items)'),
-      h('span',{style:{fontSize:'.82rem',color:'#6b7280'}},
-        S.o===0?'':'only counts events that actually fired')),
+    h('div',{class:'panel'},
+      // BUGGY column
+      h('div',{class:'col',style:{background:'#fef2f2',borderColor:'#fecaca'}},
+        h('h2',{style:{color:'#dc2626'}},'🐛 Buggy (MUI 6.1.6)'),
+        h('div',{style:{fontSize:12,color:'#dc2626',marginBottom:6}},
+          h('code',{style:{background:'#fee2e2'}},'if (onClose && open) — 读闭包')),
+        h('div',{class:'card '+(B.o>B.c?'bad':'good'),
+          style:{background:B.o>B.c?'#fee2e2':'#f0fdf4',color:B.o>B.c?'#dc2626':'#166534'}},
+          B.o===0?'⏳ 未运行':B.o>B.c?('❌ onClose 掉落 '+(B.o-B.c)+' 次'):'✓ 正常'),
+        h('pre',{style:{fontSize:11,margin:0}},
+` onOpen=${B.o}  onClose=${B.c}  dropped=${B.o-B.c}`),
+        h('div',{style:{marginTop:8,display:'flex',alignItems:'center',gap:8,padding:'6px 10px',background:'#fff',borderRadius:4,border:'1px solid #fecaca'}},
+          h(Tooltip,{open:buggyOpen,title:'Tooltip Content',enterDelay:0,leaveDelay:0,
+            onOpen:()=>{B.o++;setTimeout(()=>{buggyOpen=true;},0);},
+            onClose:()=>{B.c++;}
+          },h('div',{'data-id':'b',style:{padding:'4px 10px',border:'1px solid #e8a0a0',borderRadius:4,cursor:'pointer',fontSize:12}},'🖱️ hover target')),
+          h('span',{style:{fontSize:11,color:'#888'}},'受控 open=false')
+        )
+      ),
+      // FIXED column
+      h('div',{class:'col',style:{background:'#f0fdf4',borderColor:'#bbf7d0'}},
+        h('h2',{style:{color:'#166534'}},'✅ Fixed (openRef)'),
+        h('div',{style:{fontSize:12,color:'#166534',marginBottom:6}},
+          h('code',{style:{background:'#dcfce7'}},'if (onClose && wasOpen) — 读 ref')),
+        h('div',{class:'card',style:{background:'#dcfce7',color:'#166534'}},
+          F.o===0?'⏳ 未运行':F.o>F.c?('❌ 异常掉落 '+F.o-F.c):'✅ onClose 正常触发'),
+        h('pre',{style:{fontSize:11,margin:0}},
+` onOpen=${F.o}  onClose=${F.c}  dropped=${F.o-F.c}`),
+        h('div',{style:{marginTop:8,display:'flex',alignItems:'center',gap:8,padding:'6px 10px',background:'#fff',borderRadius:4,border:'1px solid #86d9a0'}},
+          h(MiniTooltip,{title:'Tooltip Content',enterDelay:0,leaveDelay:0,
+            onOpen:()=>{F.o++;},
+            onClose:()=>{F.c++;}
+          },h('div',{'data-id':'f',style:{padding:'4px 10px',border:'1px solid #86d9a0',borderRadius:4,cursor:'pointer',fontSize:12}},'🖱️ hover target')),
+          h('span',{style:{fontSize:11,color:'#888'}},'非受控')
+        )
+      )
+    ),
+    h('button',{class:'btn',onClick:run},'▶ 运行'),
+    h('pre',{style:{marginTop:12}},
+`Timeline (两列同时执行):
 
-    // Result card
-    h('div',{style:{padding:12,borderRadius:6,marginBottom:12,border:'1px solid',
-      textAlign:'center',fontWeight:700,fontSize:'1.2rem',
-      background:S.o>S.c?'#fef2f2':'#fff',
-      borderColor:S.o>S.c?'#fecaca':'#e5e7eb',
-      color:S.o>S.c?'#dc2626':'#888'}},
-      S.o===0?'⏳ Click RUN':
-      S.o>S.c?'❌ BUG REPRODUCED — onClose dropped '+(S.o-S.c)+' times':
-      '✓ onClose always fired'),
+mouseover → handleOpen → setOpen(true) ← 未 commit
+         → onOpen → setTimeout(()=>setOpen(true),0) ← 被推迟
+mouseleave → handleClose:
+  🐛 Buggy:  if (onClose && open)     → open=false → onClose SKIPPED ✗
+  ✅ Fixed:  if (onClose && wasOpen)  → wasOpen=true → onClose fires ✓
 
-    // Numbers
-    S.o>0&&h('div',{style:{display:'flex',justifyContent:'center',gap:32,marginBottom:12,fontSize:'1rem'}},
-      h('span',null,'onOpen = ',h('b',null,S.o)),
-      h('span',{style:{color:'#dc2626'}},'onClose = ',h('b',null,S.c)),
-      h('span',{style:{color:S.o>S.c?'#dc2626':'#166534',fontWeight:700}},
-        'dropped = '+(S.o-S.c))),
+Fix 在 Tooltip.js 内的改动:
+  const openRef = React.useRef(open);
+  useLayoutEffect(() => { openRef.current = openState; }, [openState]);
 
-    // Items
-    h('div',{style:{display:'flex',flexWrap:'wrap',gap:2,maxHeight:400,overflowY:'auto',padding:6,border:'1px solid #e5e7eb',borderRadius:6,background:'#fff'}},
-      Array.from({length:N},(_,i)=>
-        h(Tooltip,{
-          key:i,title:'T'+i,enterDelay:0,leaveDelay:0,
-          open:openMap[i]||false,
-          onOpen:()=>{
-            S.o++;
-            // ⭐ DEFER the controlled update — models production jank
-            setTimeout(()=>{openMap[i]=true;},0);
-          },
-          onClose:()=>{S.c++;}
-        },h('div',{'data-id':i,class:'cell',
-          style:{background:'#fff5f5',borderColor:'#e8a0a0'}
-        },''+(i)))))
-  );
+  handleOpen:
+    const wasOpen = openRef.current;
+    openRef.current = true;        ← 同步写入,不等 commit
+    setOpenState(true);
+    if (onOpen && !wasOpen) onOpen(event);
+
+  handleClose:
+    const wasOpen = openRef.current;  ← 读 ref,不是闭包
+    openRef.current = false;
+    setOpenState(false);
+    if (onClose && wasOpen) onClose(event);  ← wasOpen=true,正确触发`));
 }
 
 createRoot(document.getElementById('root')).render(h(App));
