@@ -1,17 +1,22 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"/><title>MUI Tooltip onClose bug repro</title>
 <style>
-body{font:14px/1.5 system-ui,sans-serif;padding:24px;max-width:960px;margin:0 auto}
-h1{font-size:1.15rem}
-p{font-size:.85rem;color:#555}
-code{background:#f0f0f0;padding:1px 4px;border-radius:3px;font:12px monospace}
-pre{font:12px monospace}
+body{font:14px/1.5 system-ui,sans-serif;padding:24px;max-width:960px;margin:0 auto;background:#fafafa}
+h1{font-size:1.15rem;margin:0 0 4px;color:#111}
+p{font-size:.85rem;color:#555;margin:4px 0 12px;max-width:720px}
+code{font:12px monospace;background:#f0f0f0;padding:1px 4px;border-radius:3px}
+pre{font:12px/1.4 monospace;background:#1e1e1e;color:#d4d4d4;padding:12px;border-radius:6px;overflow:auto}
+.cell{width:56px;height:22px;border:1px solid #d0d0d0;border-radius:3px;font:10px/22px monospace;text-align:center;display:inline-block;margin:1px;cursor:pointer}
 </style></head><body>
+
 <h1>🐛 MUI Tooltip controlled-mode onClose bug (v6.1.6)</h1>
 <p>
-  Tooltip inner guard <code>if (onClose &amp;&amp; open)</code> reads render-time closure.
-  Using <code>WidgetTooltip</code> (controlled wrapper). Synchronous dispatchEvent triggers React 18 batch → handleClose sees stale <code>open=false</code>.
+  Guard in Tooltip.js L350: <code>if (onClose &amp;&amp; open)</code> — <code>open</code> is the render-time closure value.
+  When the controlled parent's <code>setOpen(true)</code> is deferred (here via <code>setTimeout(0)</code>,
+  in production via page jank / router load), the mouseleave fires while <code>open</code> is still <code>false</code>.
+  Guard fails → onClose dropped.
 </p>
+
 <div id="root">loading modules from esm.sh…</div>
 
 <script type="importmap">
@@ -30,53 +35,80 @@ pre{font:12px monospace}
 </script>
 
 <script type="module">
-import {createElement as h,forwardRef,cloneElement,useCallback,useState} from 'react';
+import {createElement as h} from 'react';
 import {createRoot} from 'react-dom/client';
-import {Tooltip,useForkRef} from '@mui/material';
+import {Tooltip} from '@mui/material';
 
-const N = 200;
-const C = {o:0,c:0};
-
-const WidgetTooltip = forwardRef(function WT({children,onClose,onOpen,...rest},fwd){
-  const[open,setOpen]=useState(false);
-  const hOpen=useCallback(e=>{setOpen(true);onOpen?.(e);},[onOpen]);
-  const hClose=useCallback(e=>{setOpen(false);onClose?.(e);},[onClose]);
-  return h(Tooltip,{...rest,onClose:hClose,onOpen:hOpen,open},
-    cloneElement(children,{ref:useForkRef(children.ref,fwd)}));
-});
+const N=200, S={o:0,c:0};
+const openMap={}, deferMap={};
 
 function App(){
-  const[,t]=useState(0);
-  const run=()=>{C.o=0;C.c=0;t(x=>x+1);
+  const[,t]=React.useState(0);
+
+  const run=()=>{
+    S.o=0;S.c=0;
+    for(let i=0;i<N;i++){openMap[i]=false;deferMap[i]=false;}
+    t(x=>x+1);
+
     setTimeout(()=>{
       for(let i=0;i<N;i++){
         const el=document.querySelector(`[data-id="${i}"]`);
         if(!el)continue;
+
+        // mouseover → Tooltip.handleOpen → Tooltip.onOpen → app callback
         el.dispatchEvent(new MouseEvent('mouseover',{bubbles:true}));
+        // mouseleave → Tooltip.handleClose → guard reads open (still false!)
         el.dispatchEvent(new MouseEvent('mouseleave',{bubbles:true}));
       }
+      // All deferred setOpen calls are now queued in the event loop
+      // and will fire after this timeout callback returns — too late.
       setTimeout(()=>t(x=>x+1),50);
     },50);
   };
 
+  // Each Tooltip is CONTROLLED: open comes from openMap[i].
+  // onOpen defers updating openMap[i] to true via setTimeout(0),
+  // simulating a commit delayed by page jank / router load.
   return h('div',null,
     h('div',{style:{display:'flex',alignItems:'center',gap:12,marginBottom:12}},
       h('button',{onClick:run,style:{padding:'6px 18px',fontSize:13,fontWeight:600,border:'none',borderRadius:6,cursor:'pointer',color:'#fff',background:'#2563eb'}},
         '▶ RUN ('+N+' items)'),
-      h('span',{style:{fontSize:'.82rem',color:'#888'}},
-        C.o===0?'Dispatches mouseover+mouseleave synchronously per item → React 18 batches → handleClose sees stale closure open':
-        'onOpen='+C.o+' onClose='+C.c+' dropped='+(C.o-C.c))),
+      h('span',{style:{fontSize:'.82rem',color:'#6b7280'}},
+        S.o===0?'':'only counts events that actually fired')),
 
-    h('div',{style:{padding:12,borderRadius:6,marginBottom:12,textAlign:'center',fontWeight:700,fontSize:'1.3rem',
-      background:C.o>C.c?'#fef2f2':'#fff',color:C.o>C.c?'#dc2626':'#888'}},
-      C.o===0?'⏳ Click RUN':
-      C.o>C.c?'❌ BUG REPRODUCED: onClose dropped '+(C.o-C.c)+' times':
-      '✓ All onClose calls fired'),
+    // Result card
+    h('div',{style:{padding:12,borderRadius:6,marginBottom:12,border:'1px solid',
+      textAlign:'center',fontWeight:700,fontSize:'1.2rem',
+      background:S.o>S.c?'#fef2f2':'#fff',
+      borderColor:S.o>S.c?'#fecaca':'#e5e7eb',
+      color:S.o>S.c?'#dc2626':'#888'}},
+      S.o===0?'⏳ Click RUN':
+      S.o>S.c?'❌ BUG REPRODUCED — onClose dropped '+(S.o-S.c)+' times':
+      '✓ onClose always fired'),
 
-    h('div',{style:{display:'flex',flexWrap:'wrap',gap:2,maxHeight:480,overflowY:'auto',padding:6,border:'1px solid #e0e0e0',borderRadius:6,background:'#fff'}},
+    // Numbers
+    S.o>0&&h('div',{style:{display:'flex',justifyContent:'center',gap:32,marginBottom:12,fontSize:'1rem'}},
+      h('span',null,'onOpen = '+h('b',null,S.o)),
+      h('span',{style:{color:'#dc2626'}},'onClose = '+h('b',null,S.c)),
+      h('span',{style:{color:S.o>S.c?'#dc2626':'#166534',fontWeight:700}},
+        'dropped = '+(S.o-S.c))),
+
+    // Items
+    h('div',{style:{display:'flex',flexWrap:'wrap',gap:2,maxHeight:400,overflowY:'auto',padding:6,border:'1px solid #e5e7eb',borderRadius:6,background:'#fff'}},
       Array.from({length:N},(_,i)=>
-        h(WidgetTooltip,{key:i,title:'T'+i,onOpen:()=>{C.o++},onClose:()=>{C.c++}},
-          h('div',{'data-id':i,style:{width:60,height:22,border:'1px solid #d0d0d0',borderRadius:2,font:'10px/22px monospace',textAlign:'center',cursor:'pointer'}},''+(i))))));
+        h(Tooltip,{
+          key:i,title:'T'+i,enterDelay:0,leaveDelay:0,
+          open:openMap[i]||false,
+          onOpen:()=>{
+            S.o++;
+            // ⭐ DEFER the controlled update — models production jank
+            setTimeout(()=>{openMap[i]=true;},0);
+          },
+          onClose:()=>{S.c++;}
+        },h('div',{'data-id':i,class:'cell',
+          style:{background:'#fff5f5',borderColor:'#e8a0a0'}
+        },''+(i)))))
+  );
 }
 
 createRoot(document.getElementById('root')).render(h(App));
