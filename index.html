@@ -1,7 +1,19 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"/><title>Tooltip controlled onClose repro</title></head><body>
-<div id="root"></div>
-<pre id="out" style="font:14px monospace"></pre>
+<html lang="en"><head><meta charset="utf-8"/><title>MUI Tooltip onClose bug repro</title>
+<style>
+body{font:14px/1.5 system-ui,sans-serif;padding:24px;max-width:960px;margin:0 auto}
+h1{font-size:1.15rem}
+p{font-size:.85rem;color:#555}
+code{background:#f0f0f0;padding:1px 4px;border-radius:3px;font:12px monospace}
+pre{font:12px monospace}
+</style></head><body>
+<h1>🐛 MUI Tooltip controlled-mode onClose bug (v6.1.6)</h1>
+<p>
+  Tooltip inner guard <code>if (onClose &amp;&amp; open)</code> reads render-time closure.
+  Using <code>WidgetTooltip</code> (controlled wrapper). Synchronous dispatchEvent triggers React 18 batch → handleClose sees stale <code>open=false</code>.
+</p>
+<div id="root">loading modules from esm.sh…</div>
+
 <script type="importmap">
 {
   "imports": {
@@ -16,36 +28,57 @@
   }
 }
 </script>
+
 <script type="module">
-import { createElement as h, forwardRef, cloneElement, useCallback, useState } from 'react';
-import { createRoot } from 'react-dom/client';
-import { Tooltip, useForkRef } from '@mui/material';
+import {createElement as h,forwardRef,cloneElement,useCallback,useState} from 'react';
+import {createRoot} from 'react-dom/client';
+import {Tooltip,useForkRef} from '@mui/material';
 
 const N = 200;
-window.__C = { open:0, close:0 };
+const C = {o:0,c:0};
 
-const WidgetTooltip = forwardRef(function WidgetTooltip({ children, onClose, onOpen, open:openProp, ...rest }, fwd) {
-  const [open, setOpen] = useState(false);
-  const hOpen = useCallback(e => { setOpen(true); onOpen?.(e); }, [onOpen]);
-  const hClose = useCallback(e => { setOpen(false); onClose?.(e); }, [onClose]);
-  const r = useForkRef(children.ref, fwd);
-  return h(Tooltip, { ...rest, onClose:hClose, onOpen:hOpen, open }, cloneElement(children, { ref:r }));
+const WidgetTooltip = forwardRef(function WT({children,onClose,onOpen,...rest},fwd){
+  const[open,setOpen]=useState(false);
+  const hOpen=useCallback(e=>{setOpen(true);onOpen?.(e);},[onOpen]);
+  const hClose=useCallback(e=>{setOpen(false);onClose?.(e);},[onClose]);
+  return h(Tooltip,{...rest,onClose:hClose,onOpen:hOpen,open},
+    cloneElement(children,{ref:useForkRef(children.ref,fwd)}));
 });
 
-function App() {
-  return h('div', { style:{padding:20,display:'flex',flexWrap:'wrap',gap:2} },
-    Array.from({length:N}, (_,i) =>
-      h(WidgetTooltip, { key:i, title:'T'+i, enterDelay:0, leaveDelay:0,
-        onOpen: ()=>{ window.__C.open++; },
-        onClose: ()=>{ window.__C.close++; document.getElementById('out').textContent=`onOpen=${window.__C.open} onClose=${window.__C.close} dropped=${window.__C.open-window.__C.close}`; },
-      }, h('div', { 'data-id':i,
-        style:{width:60,height:22,border:'1px solid #ccc',borderRadius:2,fontSize:10,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center'}
-      }, ''+i))
-    )
-  );
+function App(){
+  const[,t]=useState(0);
+  const run=()=>{C.o=0;C.c=0;t(x=>x+1);
+    setTimeout(()=>{
+      for(let i=0;i<N;i++){
+        const el=document.querySelector(`[data-id="${i}"]`);
+        if(!el)continue;
+        el.dispatchEvent(new MouseEvent('mouseover',{bubbles:true}));
+        el.dispatchEvent(new MouseEvent('mouseleave',{bubbles:true}));
+      }
+      setTimeout(()=>t(x=>x+1),50);
+    },50);
+  };
+
+  return h('div',null,
+    h('div',{style:{display:'flex',alignItems:'center',gap:12,marginBottom:12}},
+      h('button',{onClick:run,style:{padding:'6px 18px',fontSize:13,fontWeight:600,border:'none',borderRadius:6,cursor:'pointer',color:'#fff',background:'#2563eb'}},
+        '▶ RUN ('+N+' items)'),
+      h('span',{style:{fontSize:'.82rem',color:'#888'}},
+        C.o===0?'Dispatches mouseover+mouseleave synchronously per item → React 18 batches → handleClose sees stale closure open':
+        'onOpen='+C.o+' onClose='+C.c+' dropped='+(C.o-C.c))),
+
+    h('div',{style:{padding:12,borderRadius:6,marginBottom:12,textAlign:'center',fontWeight:700,fontSize:'1.3rem',
+      background:C.o>C.c?'#fef2f2':'#fff',color:C.o>C.c?'#dc2626':'#888'}},
+      C.o===0?'⏳ Click RUN':
+      C.o>C.c?'❌ BUG REPRODUCED: onClose dropped '+(C.o-C.c)+' times':
+      '✓ All onClose calls fired'),
+
+    h('div',{style:{display:'flex',flexWrap:'wrap',gap:2,maxHeight:480,overflowY:'auto',padding:6,border:'1px solid #e0e0e0',borderRadius:6,background:'#fff'}},
+      Array.from({length:N},(_,i)=>
+        h(WidgetTooltip,{key:i,title:'T'+i,onOpen:()=>{C.o++},onClose:()=>{C.c++}},
+          h('div',{'data-id':i,style:{width:60,height:22,border:'1px solid #d0d0d0',borderRadius:2,font:'10px/22px monospace',textAlign:'center',cursor:'pointer'}},''+(i))))));
 }
 
 createRoot(document.getElementById('root')).render(h(App));
-document.getElementById('out').textContent = 'ready';
 </script>
 </body></html>
