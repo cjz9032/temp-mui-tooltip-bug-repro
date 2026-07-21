@@ -49,7 +49,7 @@ import {createRoot} from 'react-dom/client';
 import {Tooltip} from '@mui/material';
 
 const C={bO:0,bC:0,fO:0,fC:0};
-let buggyOpen=false, fixedOpen=false;
+let buggyOpen=false;
 
 // ── Buggy: uses @mui/material@6.1.6 (real component, buggy guard) ──
 // The Tooltip internal reads let open = openState; if (onClose && open).
@@ -65,7 +65,6 @@ function FixedTooltip({title,children}){
 
   const hOpen=e=>{
     C.fO++;
-    // handleOpen: sync write ref, then setState, then fire onOpen using ref
     ref.current=true;
     setOpen(true);
   };
@@ -73,12 +72,11 @@ function FixedTooltip({title,children}){
     const wasOpen=ref.current;
     ref.current=false;
     setOpen(false);
-    // ⭐ guard uses ref — correctly true even if React hasn't committed
     if(wasOpen)C.fC++;
   };
 
   return h('div',{style:{display:'inline-block'}},
-    h('div',{'data-id':'f',onMouseOver:hOpen,onMouseLeave:hClose,style:{padding:'6px 12px',border:'1px solid #86d9a0',borderRadius:4,cursor:'pointer',fontSize:12,background:'#f0fdf4'}},children),
+    h('div',{'data-id':'f',onMouseOver:hOpen,onMouseOut:hClose,style:{padding:'6px 12px',border:'1px solid #86d9a0',borderRadius:4,cursor:'pointer',fontSize:12,background:'#f0fdf4'}},children),
     open&&h('div',{role:'tooltip',style:{position:'fixed',padding:'4px 8px',background:'#333',color:'#fff',borderRadius:4,fontSize:12,pointerEvents:'none',zIndex:1500,marginTop:4}},title)
   );
 }
@@ -87,7 +85,7 @@ function App(){
   const[,t]=useState(0);
 
   const run=()=>{
-    C.bO=0;C.bC=0;C.fO=0;C.fC=0;buggyOpen=false;fixedOpen=false;
+    C.bO=0;C.bC=0;C.fO=0;C.fC=0;buggyOpen=false;
     t(n=>n+1);
     setTimeout(()=>{
       // Dispatch BOTH mouseover on both columns, then BOTH mouseleave
@@ -97,8 +95,8 @@ function App(){
       if(!be||!fe)return;
       be.dispatchEvent(new MouseEvent('mouseover',{bubbles:true}));
       fe.dispatchEvent(new MouseEvent('mouseover',{bubbles:true}));
-      be.dispatchEvent(new MouseEvent('mouseleave',{bubbles:true}));
-      fe.dispatchEvent(new MouseEvent('mouseleave',{bubbles:true}));
+      be.dispatchEvent(new MouseEvent('mouseout',{bubbles:true}));
+      fe.dispatchEvent(new MouseEvent('mouseout',{bubbles:true}));
       t(n=>n+1);
     },100);
   };
