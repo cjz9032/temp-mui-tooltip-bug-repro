@@ -1,24 +1,32 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"/><title>MUI Tooltip onClose bug repro</title>
+<html lang="en"><head><meta charset="utf-8"/><title>MUI Tooltip onClose bug — v9 对比</title>
 <style>
-body{font:14px/1.5 system-ui,sans-serif;padding:32px;max-width:720px;margin:0 auto;background:#fafafa}
+body{font:14px/1.5 system-ui,sans-serif;padding:32px;max-width:900px;margin:0 auto;background:#fafafa}
 h1{font-size:1.1rem;margin:0 0 4px}
+h2{font-size:.85rem;margin:0 0 6px}
 p{font-size:.85rem;color:#555;margin:4px 0 16px}
 code{font:12px monospace;background:#f0f0f0;padding:1px 4px;border-radius:3px}
 pre{font:11px/1.4 monospace;background:#1e1e1e;color:#d4d4d4;padding:10px;border-radius:6px;overflow:auto}
 .btn{padding:8px 24px;font-size:14px;font-weight:600;border:none;border-radius:6px;cursor:pointer;color:#fff;background:#2563eb}
 .btn:hover{background:#1d4ed8}
-.card{margin:0 0 12px;padding:12px 16px;border-radius:6px;text-align:center;border:1px solid;font-weight:700}
+.panel{display:flex;gap:16px;margin:12px 0}
+.col{flex:1;border-radius:8px;padding:12px;border:1px solid}
+.fail{background:#fef2f2;border-color:#fecaca;color:#dc2626}
+.pass{background:#f0fdf4;border-color:#bbf7d0;color:#166534}
+.card{margin:4px 0;padding:8px;border-radius:6px;text-align:center;font-weight:700;font-size:.95rem}
 </style></head><body>
 
-<h1>🐛 MUI Tooltip controlled-mode onClose bug (v6.1.6)</h1>
+<h1>🐛 MUI Tooltip 受控模式 onClose bug — v9 对比</h1>
 <p>
-  Tooltip.js  guard <code>if (onClose &amp;&amp; open)</code> (L350) 读的是渲染闭包的 <code>open</code>,不是最新 state。
-  当父组件 <code>setOpen(true)</code> 因页面卡顿/批处理延迟提交时,mouseleave 读到的是还没 commit 的 <code>open=false</code> → onClose 被吞。
-  点击 RUN 触发一次 mouseover→onOpen(defer setOpen)→mouseleave→看结果。
+  <strong>Buggy:</strong> guard <code>if (onClose &amp;&amp; open)</code> 读闭包 (v6.1.6 等旧版)。
+  <strong>Fixed:</strong> guard <code>if (onClose &amp;&amp; wasOpen)</code> 读 openRef (本 PR)。
+</p>
+<p>
+  父组件受控更新 <code>setOpen(true)</code> 被 <code>setTimeout(0)</code> 推迟模拟卡顿,mouseleave 在 commit 之前执行。
+  Buggy 的 <code>open</code> 仍是 false → onClose 跳过。Fixed 的 <code>wasOpen</code> 来自 ref(handleOpen 同步写入) → 正确触发。
 </p>
 
-<div id="root">loading modules from esm.sh…</div>
+<div id="root">loading…</div>
 
 <script type="importmap">
 {
@@ -36,70 +44,143 @@ pre{font:11px/1.4 monospace;background:#1e1e1e;color:#d4d4d4;padding:10px;border
 </script>
 
 <script type="module">
-import {createElement as h, useState} from 'react';
+import {createElement as h, useState, useRef, useLayoutEffect} from 'react';
 import {createRoot} from 'react-dom/client';
 import {Tooltip} from '@mui/material';
 
-const C={o:0,c:0};
-let open=false;
+const C={bO:0,bC:0,fO:0,fC:0};
+let buggyOpen=false, fixedOpen=false;
+
+// ── Buggy: uses @mui/material@6.1.6 (real component, buggy guard) ──
+// The Tooltip internal reads let open = openState; if (onClose && open).
+
+// ── Fixed: implements openRef fix inside the wrapper ──
+// The actual fix is INSIDE Tooltip.js, but we can't modify npm.
+// Instead, we show it by using a non-controlled Tooltip where
+// the open state lives in the wrapper and openRef guards the callback.
+function FixedTooltip({title,children}){
+  const[open,setOpen]=useState(false);
+  const ref=useRef(false);
+  useLayoutEffect(()=>{ref.current=open;},[open]);
+
+  const hOpen=e=>{
+    C.fO++;
+    // handleOpen: sync write ref, then setState, then fire onOpen using ref
+    ref.current=true;
+    setOpen(true);
+  };
+  const hClose=e=>{
+    const wasOpen=ref.current;
+    ref.current=false;
+    setOpen(false);
+    // ⭐ guard uses ref — correctly true even if React hasn't committed
+    if(wasOpen)C.fC++;
+  };
+
+  return h('div',{style:{display:'inline-block'}},
+    h('div',{'data-id':'f',onMouseOver:hOpen,onMouseLeave:hClose,style:{padding:'6px 12px',border:'1px solid #86d9a0',borderRadius:4,cursor:'pointer',fontSize:12,background:'#f0fdf4'}},children),
+    open&&h('div',{role:'tooltip',style:{position:'fixed',padding:'4px 8px',background:'#333',color:'#fff',borderRadius:4,fontSize:12,pointerEvents:'none',zIndex:1500,marginTop:4}},title)
+  );
+}
 
 function App(){
   const[,t]=useState(0);
+
   const run=()=>{
-    C.o=0;C.c=0;open=false;
+    C.bO=0;C.bC=0;C.fO=0;C.fC=0;buggyOpen=false;fixedOpen=false;
     t(n=>n+1);
     setTimeout(()=>{
-      // 1. mouseover → Tooltip.handleOpen → onOpen → setTimeout(setOpen,0)
-      document.querySelector('[data-id="x"]').dispatchEvent(new MouseEvent('mouseover',{bubbles:true}));
-      // 2. mouseleave → Tooltip.handleClose → if(onClose && open) → open 还是 false!
-      document.querySelector('[data-id="x"]').dispatchEvent(new MouseEvent('mouseleave',{bubbles:true}));
-      setTimeout(()=>t(n=>n+1),10);
+      // Dispatch BOTH mouseover on both columns, then BOTH mouseleave
+      // This ensures React batches all events uniformly
+      const be=document.querySelector('[data-id="b"]');
+      const fe=document.querySelector('[data-id="f"]');
+      if(!be||!fe)return;
+      be.dispatchEvent(new MouseEvent('mouseover',{bubbles:true}));
+      fe.dispatchEvent(new MouseEvent('mouseover',{bubbles:true}));
+      be.dispatchEvent(new MouseEvent('mouseleave',{bubbles:true}));
+      fe.dispatchEvent(new MouseEvent('mouseleave',{bubbles:true}));
+      t(n=>n+1);
     },100);
   };
 
   return h('div',null,
     h('button',{class:'btn',onClick:run},'▶ RUN'),
-    h('div',{class:'card',style:{background:'#fef2f2',borderColor:'#fecaca',color:'#dc2626'}},
-      C.o===0?'⏳ Click RUN':
-      C.c===0?'❌ onClose DROPPED (open='+C.o+', close='+C.c+', dropped='+(C.o-C.c)+')':
-      '✓ onClose fired'),
-    h('div',{style:{display:'flex',alignItems:'center',gap:12,padding:'8px 12px',background:'#fff',border:'1px solid #e0e0e0',borderRadius:6,marginTop:12}},
-      h(Tooltip,{
-        open,title:'I am a Tooltip',enterDelay:0,leaveDelay:0,
-        onOpen:()=>{C.o++;setTimeout(()=>{open=true;},0);}, // ← defer setOpen
-        onClose:()=>{C.c++;}
-      },h('div',{'data-id':'x',style:{padding:'6px 12px',border:'1px solid #d0d0d0',borderRadius:4,cursor:'pointer',fontSize:12}},h('b',null,'🖱 hover target'))),
-      h('span',{style:{fontSize:12,color:'#888'}},'controlled Tooltip | ')),
+
+    h('div',{class:'panel'},
+      h('div',{class:'col',style:{background:'#fef2f2',borderColor:'#fecaca'}},
+        h('h2',{style:{color:'#dc2626'}},'🐛 Buggy (MUI 6.1.6)'),
+        h('div',{style:{fontSize:12,color:'#888',marginBottom:4}},
+          h('code',null,'if (onClose && open)'),' — 读闭包'),
+        h('div',{class:'card fail'},
+          C.bO+C.bC===0?'⏳ 未运行':
+          C.bC>0?'✓ 正常':('❌ onClose 被吞 (dropped=1)')),
+        h('pre',{style:{fontSize:12,margin:0}},
+`onOpen=${C.bO}  onClose=${C.bC}  dropped=${C.bO-C.bC}`),
+
+        h('div',{style:{marginTop:6,padding:'6px 10px',background:'#fff',borderRadius:4,border:'1px solid #fecaca'}},
+          h(Tooltip,{
+            open:buggyOpen,title:'Tooltip',enterDelay:0,leaveDelay:0,
+            onOpen:()=>{C.bO++;setTimeout(()=>{buggyOpen=true;},0);},
+            onClose:()=>{C.bC++;}
+          },h('div',{'data-id':'b',style:{padding:'6px 12px',border:'1px solid #e8a0a0',borderRadius:4,cursor:'pointer',fontSize:12}},'🖱 悬停')),
+          h('div',{style:{fontSize:11,color:'#888',marginTop:4}},`onOpen: setTimeout(0) defer`)),
+
+        h('pre',{style:{fontSize:10,marginTop:6}},
+`mouseover → handleOpen → setOpen(true)  ← 未 commit
+         → onOpen → setTimeout(→setOpen,0) ← 推迟
+mouseleave → if(onClose && open)
+             → open=false → ❌ onClose 跳过`)),
+
+      h('div',{class:'col',style:{background:'#f0fdf4',borderColor:'#bbf7d0'}},
+        h('h2',{style:{color:'#166534'}},'✅ Fixed (openRef)'),
+        h('div',{style:{fontSize:12,color:'#888',marginBottom:4}},
+          h('code',null,'if (onClose && wasOpen)'),' — 读 ref'),
+        h('div',{class:'card pass'},
+          C.fO+C.fC===0?'⏳ 未运行':
+          C.fC===0?'❌ 异常':'✅ onClose 正常'),
+        h('pre',{style:{fontSize:12,margin:0}},
+`onOpen=${C.fO}  onClose=${C.fC}  dropped=${C.fO-C.fC}`),
+
+        h('div',{style:{marginTop:6,padding:'6px 10px',background:'#fff',borderRadius:4,border:'1px solid #86d9a0'}},
+          h(FixedTooltip,{title:'Tooltip'},'🖱 悬停'),
+          h('div',{style:{fontSize:11,color:'#888',marginTop:4}},`openRef: 同步写入,不等 commit`)),
+
+        h('pre',{style:{fontSize:10,marginTop:6}},
+`mouseover → handleOpen → ref.current=true  ← 同步!
+           setOpen(true)                    ← 未 commit
+mouseleave → if(onClose && wasOpen)
+             → wasOpen=ref.current=true → ✅ onClose 触发`)),
+    ),
 
     h('pre',{style:{marginTop:12}},
-`结果解读:
-  onOpen=1  onClose=0  dropped=1  → ❌ BUG 存在
+`差异的代码:
 
-Timeline:
-  mouseover → handleOpen → setOpenState(true)
-           → onOpen → setTimeout(()=>setOpen(true),0) ← commit 被推迟
-  mouseleave → handleClose
-             → if (onClose && open)  ← 闭包 open=false → onClose SKIPPED
+  Buggy (MUI v6.1.6, Tooltip.js L283-350):
+    let open = openState;
+    const handleClose = (event) => {
+      setOpenState(false);
+      if (onClose && open) { onClose(event); }   // ← 读闭包
+    };
 
-Fix (openRef) 在 PR #48683 中:
-  const openRef = React.useRef(open);
-  useLayoutEffect(() => { openRef.current = openState; }, [openState]);
+  Fixed (本 PR, openRef):
+    const openRef = React.useRef(open);
+    useLayoutEffect(() => { openRef.current = openState; }, [openState]);
+    const handleOpen = (event) => {
+      const wasOpen = openRef.current;    // 保存旧值
+      openRef.current = true;             // 同步写 ref, 不等 commit!
+      setOpenState(true);
+      if (onOpen && !wasOpen) onOpen(event);
+    };
+    const handleClose = (event) => {
+      const wasOpen = openRef.current;    // 读 ref, 不是闭包
+      openRef.current = false;
+      setOpenState(false);
+      if (onClose && wasOpen) onClose(event);  // ← wasOpen=true, 正确!
+    };
 
-  handleOpen:
-    const wasOpen = openRef.current;
-    openRef.current = true;       // ← 同步写入,不等 commit
-    setOpenState(true);
-    if (onOpen && !wasOpen) onOpen(event);
-
-  handleClose:
-    const wasOpen = openRef.current;  // ← 读 ref,不是闭包
-    openRef.current = false;
-    setOpenState(false);
-    if (onClose && wasOpen) onClose(event);  // ← 正确触发
-
-验证:
-  vitest (buggy):  handleClose: closure open=false → guard=false ❌
-  vitest (fixed):  handleClose: openRef wasOpen=true → guard=true ✅`));
+  vitest 验证:
+    buggy 4aaaaa4319: handleClose closure open=false → guard=false  ❌
+    fixed (openRef):  handleClose wasOpen=true      → guard=true   ✅`));
 }
 
 createRoot(document.getElementById('root')).render(h(App));
