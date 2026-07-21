@@ -35,7 +35,7 @@ pre{font:12px/1.4 monospace;background:#1e1e1e;color:#d4d4d4;padding:12px;border
 </script>
 
 <script type="module">
-import {createElement as h} from 'react';
+import {createElement as h, useState} from 'react';
 import {createRoot} from 'react-dom/client';
 import {Tooltip} from '@mui/material';
 
@@ -43,7 +43,7 @@ const N=200, S={o:0,c:0};
 const openMap={}, deferMap={};
 
 function App(){
-  const[,t]=React.useState(0);
+  const[,t]=useState(0);
 
   const run=()=>{
     S.o=0;S.c=0;
@@ -88,8 +88,8 @@ function App(){
 
     // Numbers
     S.o>0&&h('div',{style:{display:'flex',justifyContent:'center',gap:32,marginBottom:12,fontSize:'1rem'}},
-      h('span',null,'onOpen = '+h('b',null,S.o)),
-      h('span',{style:{color:'#dc2626'}},'onClose = '+h('b',null,S.c)),
+      h('span',null,'onOpen = ',h('b',null,S.o)),
+      h('span',{style:{color:'#dc2626'}},'onClose = ',h('b',null,S.c)),
       h('span',{style:{color:S.o>S.c?'#dc2626':'#166534',fontWeight:700}},
         'dropped = '+(S.o-S.c))),
 
